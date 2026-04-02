@@ -1,0 +1,331 @@
+/*
+ * Copyright 2024 Marc Nuri
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.marcnuri.isotope.e2e;
+
+import com.icegreen.greenmail.util.GreenMail;
+import com.icegreen.greenmail.util.ServerSetup;
+import org.junit.jupiter.api.extension.AfterAllCallback;
+import org.junit.jupiter.api.extension.BeforeAllCallback;
+import org.junit.jupiter.api.extension.ExtensionContext;
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.chrome.ChromeOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import jakarta.mail.MessagingException;
+import jakarta.mail.Session;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeMessage;
+import java.io.File;
+import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.ServerSocket;
+import java.net.URL;
+import java.util.Date;
+import java.util.Properties;
+
+/**
+ * JUnit 5 extension that manages the full Isotope Mail test environment:
+ * - GreenMail (embedded IMAP/SMTP server)
+ * - Spring Boot backend (server JAR)
+ * - Frontend static file server (Python http.server)
+ * - Chrome WebDriver (headless)
+ */
+public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallback {
+
+    private static final Logger log = LoggerFactory.getLogger(IsotopeTestEnvironment.class);
+
+    static final String USER1 = "user1@localhost";
+    static final String USER2 = "user2@localhost";
+    static final String PASSWORD = "password123";
+
+    private static GreenMail greenMail;
+    private static Process backendProcess;
+    private static Process frontendProcess;
+    private static WebDriver driver;
+
+    private static int imapPort;
+    private static int smtpPort;
+    private static int backendPort;
+    private static int frontendPort;
+
+    @Override
+    public void beforeAll(ExtensionContext context) throws Exception {
+        if (greenMail != null) {
+            return;
+        }
+        startGreenMail();
+        seedTestData();
+        startBackend();
+        startFrontend();
+        initWebDriver();
+    }
+
+    @Override
+    public void afterAll(ExtensionContext context) {
+        // WebDriver, frontend, and backend are cleaned up via shutdown hook
+    }
+
+    private void startGreenMail() {
+        imapPort = findAvailablePort();
+        smtpPort = findAvailablePort();
+
+        final ServerSetup imapSetup = new ServerSetup(imapPort, "127.0.0.1", ServerSetup.PROTOCOL_IMAP);
+        final ServerSetup smtpSetup = new ServerSetup(smtpPort, "127.0.0.1", ServerSetup.PROTOCOL_SMTP);
+
+        greenMail = new GreenMail(new ServerSetup[]{imapSetup, smtpSetup});
+        greenMail.start();
+
+        // Create user accounts
+        greenMail.setUser(USER1, "user1", PASSWORD);
+        greenMail.setUser(USER2, "user2", PASSWORD);
+
+        log.info("GreenMail started - IMAP port: {}, SMTP port: {}", imapPort, smtpPort);
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            cleanup();
+        }));
+    }
+
+    private void seedTestData() throws MessagingException {
+        // Seed emails for user1
+        deliverMessage(USER1, USER2, "Welcome to Isotope", "This is a welcome email for testing.");
+        deliverMessage(USER2, USER1, "Re: Welcome to Isotope", "Thanks for the welcome!");
+        deliverMessage(USER2, USER1, "Meeting Tomorrow", "Let's meet tomorrow at 10am.");
+        deliverMessage(USER1, USER2, "Project Update", "The project is going well.");
+        deliverMessage(USER2, USER1, "Important Notice", "Please review the attached document.");
+    }
+
+    private void deliverMessage(String from, String to, String subject, String body)
+            throws MessagingException {
+        final MimeMessage message = new MimeMessage((Session) null);
+        message.setFrom(new InternetAddress(from));
+        message.setRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(to));
+        message.setSubject(subject);
+        message.setText(body);
+        message.setSentDate(new Date());
+        greenMail.getUserManager().getUser(to).deliver(message);
+    }
+
+    private void startBackend() throws IOException, InterruptedException {
+        backendPort = findAvailablePort();
+
+        final String projectRoot = findProjectRoot();
+        final String serverJar = findServerJar(projectRoot);
+
+        log.info("Starting backend from JAR: {} on port {}", serverJar, backendPort);
+
+        final ProcessBuilder pb = new ProcessBuilder(
+                "java", "-jar", serverJar,
+                "--server.port=" + backendPort
+        );
+        pb.environment().put("SPRING_MAIL_HOST", "127.0.0.1");
+        pb.environment().put("TRUSTED_HOSTS", "");
+        pb.redirectErrorStream(true);
+        pb.redirectOutput(new File(projectRoot + "/e2e-tests/target/backend.log"));
+
+        // Set system properties for the IMAP/SMTP connection
+        // The backend uses the credentials from the login request, not env vars
+        // But we need to make sure SSL is disabled for test connections
+        backendProcess = pb.start();
+
+        waitForBackend();
+        log.info("Backend started on port {}", backendPort);
+    }
+
+    private void startFrontend() throws IOException, InterruptedException {
+        frontendPort = findAvailablePort();
+
+        final String projectRoot = findProjectRoot();
+        final String clientDist = projectRoot + "/client/dist";
+
+        // Check if dist directory exists
+        if (!new File(clientDist).exists()) {
+            throw new IllegalStateException(
+                    "Client dist directory not found at " + clientDist
+                            + ". Build the client first with: cd client && npm run build");
+        }
+
+        log.info("Starting frontend file server from {} on port {}", clientDist, frontendPort);
+
+        // Use Python's http.server as a simple static file server
+        final ProcessBuilder pb = new ProcessBuilder(
+                "python3", "-m", "http.server", String.valueOf(frontendPort),
+                "--directory", clientDist
+        );
+        pb.redirectErrorStream(true);
+        pb.redirectOutput(new File(projectRoot + "/e2e-tests/target/frontend.log"));
+        frontendProcess = pb.start();
+
+        waitForFrontend();
+        log.info("Frontend started on port {}", frontendPort);
+    }
+
+    private void initWebDriver() {
+        final ChromeOptions options = new ChromeOptions();
+        options.addArguments("--headless");
+        options.addArguments("--no-sandbox");
+        options.addArguments("--disable-dev-shm-usage");
+        options.addArguments("--disable-gpu");
+        options.addArguments("--window-size=1920,1080");
+
+        driver = new ChromeDriver(options);
+        log.info("Chrome WebDriver initialized (headless)");
+    }
+
+    private void waitForBackend() throws InterruptedException {
+        final long start = System.currentTimeMillis();
+        final long timeout = 60_000;
+        while (System.currentTimeMillis() - start < timeout) {
+            try {
+                final HttpURLConnection conn = (HttpURLConnection) new URL(
+                        "http://127.0.0.1:" + backendPort + "/v1/application/configuration"
+                ).openConnection();
+                conn.setConnectTimeout(1000);
+                conn.setReadTimeout(1000);
+                if (conn.getResponseCode() == 200) {
+                    return;
+                }
+            } catch (IOException ignored) {
+                // Server not ready yet
+            }
+            Thread.sleep(1000);
+        }
+        throw new IllegalStateException("Backend failed to start within " + timeout + "ms");
+    }
+
+    private void waitForFrontend() throws InterruptedException {
+        final long start = System.currentTimeMillis();
+        final long timeout = 15_000;
+        while (System.currentTimeMillis() - start < timeout) {
+            try {
+                final HttpURLConnection conn = (HttpURLConnection) new URL(
+                        "http://127.0.0.1:" + frontendPort + "/"
+                ).openConnection();
+                conn.setConnectTimeout(1000);
+                conn.setReadTimeout(1000);
+                if (conn.getResponseCode() == 200) {
+                    return;
+                }
+            } catch (IOException ignored) {
+                // Server not ready yet
+            }
+            Thread.sleep(500);
+        }
+        throw new IllegalStateException("Frontend failed to start within " + timeout + "ms");
+    }
+
+    private static void cleanup() {
+        log.info("Cleaning up test environment...");
+        if (driver != null) {
+            try {
+                driver.quit();
+            } catch (Exception e) {
+                log.warn("Error closing WebDriver", e);
+            }
+            driver = null;
+        }
+        if (frontendProcess != null) {
+            frontendProcess.destroyForcibly();
+            frontendProcess = null;
+        }
+        if (backendProcess != null) {
+            backendProcess.destroyForcibly();
+            backendProcess = null;
+        }
+        if (greenMail != null) {
+            greenMail.stop();
+            greenMail = null;
+        }
+    }
+
+    static String findProjectRoot() {
+        File dir = new File(System.getProperty("user.dir"));
+        // Walk up until we find the directory containing both 'server' and 'client'
+        while (dir != null) {
+            if (new File(dir, "server").exists() && new File(dir, "client").exists()) {
+                return dir.getAbsolutePath();
+            }
+            dir = dir.getParentFile();
+        }
+        throw new IllegalStateException("Could not find project root (directory containing 'server' and 'client')");
+    }
+
+    private static String findServerJar(String projectRoot) {
+        final File buildLibs = new File(projectRoot, "server/build/libs");
+        if (!buildLibs.exists() || !buildLibs.isDirectory()) {
+            throw new IllegalStateException(
+                    "Server build directory not found at " + buildLibs.getAbsolutePath()
+                            + ". Build the server first with: cd server && ./gradlew bootJar");
+        }
+        final File[] jars = buildLibs.listFiles((d, name) -> name.endsWith(".jar"));
+        if (jars == null || jars.length == 0) {
+            throw new IllegalStateException("No JAR files found in " + buildLibs.getAbsolutePath());
+        }
+        return jars[0].getAbsolutePath();
+    }
+
+    private static int findAvailablePort() {
+        try (ServerSocket socket = new ServerSocket(0)) {
+            return socket.getLocalPort();
+        } catch (IOException e) {
+            throw new RuntimeException("Could not find available port", e);
+        }
+    }
+
+    public static GreenMail getGreenMail() {
+        return greenMail;
+    }
+
+    public static WebDriver getDriver() {
+        return driver;
+    }
+
+    public static int getImapPort() {
+        return imapPort;
+    }
+
+    public static int getSmtpPort() {
+        return smtpPort;
+    }
+
+    public static int getBackendPort() {
+        return backendPort;
+    }
+
+    public static int getFrontendPort() {
+        return frontendPort;
+    }
+
+    public static String getFrontendUrl() {
+        return "http://127.0.0.1:" + frontendPort;
+    }
+
+    /**
+     * Returns the login URL pre-filled with GreenMail connection details for the given user.
+     */
+    public static String getLoginUrl(String user) {
+        final String username = user.contains("@") ? user.substring(0, user.indexOf('@')) : user;
+        return getFrontendUrl() + "/login"
+                + "?serverHost=127.0.0.1"
+                + "&serverPort=" + imapPort
+                + "&user=" + username
+                + "&imapSsl=false"
+                + "&smtpPort=" + smtpPort
+                + "&smtpSsl=false";
+    }
+}
