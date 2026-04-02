@@ -20,6 +20,7 @@ import com.icegreen.greenmail.util.ServerSetup;
 import org.junit.jupiter.api.extension.AfterAllCallback;
 import org.junit.jupiter.api.extension.BeforeAllCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
+import io.github.bonigarcia.wdm.WebDriverManager;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
@@ -32,9 +33,13 @@ import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.ServerSocket;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Date;
 import java.util.Properties;
 
@@ -42,8 +47,8 @@ import java.util.Properties;
  * JUnit 5 extension that manages the full Isotope Mail test environment:
  * - GreenMail (embedded IMAP/SMTP server)
  * - Spring Boot backend (server JAR)
- * - Frontend static file server (Python http.server)
- * - Chrome WebDriver (headless)
+ * - Frontend static file server (Python http.server with SPA fallback)
+ * - Chrome WebDriver (headless, managed by WebDriverManager)
  */
 public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallback {
 
@@ -112,7 +117,8 @@ public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallba
 
     private void deliverMessage(String from, String to, String subject, String body)
             throws MessagingException {
-        final MimeMessage message = new MimeMessage((Session) null);
+        final Session session = Session.getInstance(new Properties());
+        final MimeMessage message = new MimeMessage(session);
         message.setFrom(new InternetAddress(from));
         message.setRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(to));
         message.setSubject(subject);
@@ -162,10 +168,12 @@ public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallba
 
         log.info("Starting frontend file server from {} on port {}", clientDist, frontendPort);
 
-        // Use Python's http.server as a simple static file server
+        // Create a Python SPA server script that falls back to index.html for client-side routes
+        final Path spaServerScript = createSpaServerScript(clientDist);
+
         final ProcessBuilder pb = new ProcessBuilder(
-                "python3", "-m", "http.server", String.valueOf(frontendPort),
-                "--directory", clientDist
+                "python3", spaServerScript.toAbsolutePath().toString(),
+                String.valueOf(frontendPort)
         );
         pb.redirectErrorStream(true);
         pb.redirectOutput(new File(projectRoot + "/e2e-tests/target/frontend.log"));
@@ -176,6 +184,8 @@ public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallba
     }
 
     private void initWebDriver() {
+        WebDriverManager.chromedriver().setup();
+
         final ChromeOptions options = new ChromeOptions();
         options.addArguments("--headless");
         options.addArguments("--no-sandbox");
@@ -325,7 +335,41 @@ public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallba
                 + "&serverPort=" + imapPort
                 + "&user=" + username
                 + "&imapSsl=false"
+                + "&smtpHost=127.0.0.1"
                 + "&smtpPort=" + smtpPort
                 + "&smtpSsl=false";
+    }
+
+    /**
+     * Creates a Python script that serves static files from the given directory
+     * with SPA fallback (returns index.html for any path that doesn't match a file).
+     */
+    private static Path createSpaServerScript(String directory) throws IOException {
+        final String script = String.join("\n",
+                "import http.server",
+                "import os",
+                "import sys",
+                "",
+                "class SPAHandler(http.server.SimpleHTTPRequestHandler):",
+                "    def __init__(self, *args, **kwargs):",
+                "        super().__init__(*args, directory='" + directory.replace("'", "\\'") + "', **kwargs)",
+                "",
+                "    def do_GET(self):",
+                "        # Serve the file if it exists, otherwise fall back to index.html",
+                "        path = self.translate_path(self.path)",
+                "        if not os.path.exists(path) or os.path.isdir(path) and not os.path.exists(os.path.join(path, 'index.html')):",
+                "            self.path = '/index.html'",
+                "        return super().do_GET()",
+                "",
+                "port = int(sys.argv[1])",
+                "server = http.server.HTTPServer(('127.0.0.1', port), SPAHandler)",
+                "print(f'SPA server started on port {port}')",
+                "server.serve_forever()"
+        );
+
+        final Path scriptFile = Files.createTempFile("isotope-spa-server-", ".py");
+        Files.write(scriptFile, script.getBytes(StandardCharsets.UTF_8));
+        scriptFile.toFile().deleteOnExit();
+        return scriptFile;
     }
 }

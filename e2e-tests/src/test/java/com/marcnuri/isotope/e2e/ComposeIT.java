@@ -118,13 +118,11 @@ class ComposeIT extends BaseIT {
                             || !d.getCurrentUrl().contains("/edit")
             );
 
-            // Verify the message was delivered via GreenMail
-            // Give some time for SMTP delivery
-            try {
-                Thread.sleep(2000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+            // Poll GreenMail for the delivered message instead of sleeping
+            final boolean messageDelivered = greenMail.waitForIncomingEmail(10_000, initialMessageCount + 1);
+            assertThat(messageDelivered)
+                    .as("GreenMail should receive a new message within timeout")
+                    .isTrue();
 
             final MimeMessage[] receivedMessages = greenMail.getReceivedMessages();
             assertThat(receivedMessages.length).isGreaterThan(initialMessageCount);
