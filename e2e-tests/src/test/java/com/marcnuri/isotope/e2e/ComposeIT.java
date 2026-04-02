@@ -39,7 +39,7 @@ class ComposeIT extends BaseIT {
 
     @BeforeEach
     void setUp() {
-        if (!isLoggedIn()) {
+        if (!isLoggedInAs(IsotopeTestEnvironment.USER1)) {
             performLogin(IsotopeTestEnvironment.USER1);
         }
         waitForMessageList();
@@ -54,7 +54,7 @@ class ComposeIT extends BaseIT {
             return fabs.isEmpty() ? null : fabs.get(0);
         });
 
-        composeButton.click();
+        jsClick(composeButton);
 
         // Wait for the editor to appear
         newWait().until(d ->
@@ -73,13 +73,13 @@ class ComposeIT extends BaseIT {
         final GreenMail greenMail = IsotopeTestEnvironment.getGreenMail();
         final int initialMessageCount = greenMail.getReceivedMessages().length;
 
-        // Click compose FAB
+        // Click compose FAB using JavaScript to avoid overlay interception
         final WebElement composeButton = newWait().until(d -> {
             final List<WebElement> fabs = d.findElements(
                     By.cssSelector("button[class*='mdc-fab']"));
             return fabs.isEmpty() ? null : fabs.get(0);
         });
-        composeButton.click();
+        jsClick(composeButton);
 
         // Wait for editor
         newWait().until(d ->
@@ -109,7 +109,7 @@ class ComposeIT extends BaseIT {
                 By.cssSelector("button[class*='message-editor__send']"));
 
         if (!sendButtons.isEmpty()) {
-            sendButtons.get(0).click();
+            jsClick(sendButtons.get(0));
 
             // Wait for the message to be sent (editor should close)
             newWait(Duration.ofSeconds(15)).until(d ->

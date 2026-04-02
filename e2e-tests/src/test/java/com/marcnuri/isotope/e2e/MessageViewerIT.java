@@ -33,10 +33,12 @@ class MessageViewerIT extends BaseIT {
 
     @BeforeEach
     void setUp() {
-        if (!isLoggedIn()) {
+        if (!isLoggedInAs(IsotopeTestEnvironment.USER1)) {
             performLogin(IsotopeTestEnvironment.USER1);
+        } else {
+            // Click INBOX in sidebar to navigate back to message list (preserves SPA state)
+            navigateToInbox();
         }
-        // Ensure we're at the main app view
         waitForMessageList();
     }
 
@@ -47,13 +49,12 @@ class MessageViewerIT extends BaseIT {
                 || d.getPageSource().contains("Meeting Tomorrow")
                 || d.getPageSource().contains("Important Notice"));
 
-        // Find a message item and click it (click the itemDetails span to open viewer)
+        // Find a message item and click it using JavaScript to avoid overlay interception
         final List<WebElement> messageItems = driver().findElements(
-                By.cssSelector("[class*='mdc-list-item'] [class*='itemDetails'],"
-                        + "[class*='mdc-list-item']"));
+                By.cssSelector("[class*='messageList'] [class*='itemDetails']"));
 
         assertThat(messageItems).isNotEmpty();
-        messageItems.get(0).click();
+        jsClick(messageItems.get(0));
 
         // Wait for message viewer to appear
         newWait().until(d ->
@@ -71,13 +72,12 @@ class MessageViewerIT extends BaseIT {
                 || d.getPageSource().contains("Meeting Tomorrow")
                 || d.getPageSource().contains("Important Notice"));
 
-        // Click a message
+        // Click a message using JavaScript to avoid overlay interception
         final List<WebElement> messageItems = driver().findElements(
-                By.cssSelector("[class*='mdc-list-item'] [class*='itemDetails'],"
-                        + "[class*='mdc-list-item']"));
+                By.cssSelector("[class*='messageList'] [class*='itemDetails']"));
 
         assertThat(messageItems).isNotEmpty();
-        messageItems.get(0).click();
+        jsClick(messageItems.get(0));
 
         // Wait for viewer with subject element
         newWait().until(d ->

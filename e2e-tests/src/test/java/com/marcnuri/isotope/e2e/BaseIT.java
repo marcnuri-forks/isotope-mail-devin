@@ -17,6 +17,7 @@ package com.marcnuri.isotope.e2e;
 
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.openqa.selenium.By;
+import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.NoSuchElementException;
 import org.openqa.selenium.StaleElementReferenceException;
 import org.openqa.selenium.WebDriver;
@@ -32,6 +33,8 @@ import java.time.Duration;
  */
 @ExtendWith(IsotopeTestEnvironment.class)
 public abstract class BaseIT {
+
+    private static String currentUser;
 
     protected WebDriver driver() {
         return IsotopeTestEnvironment.getDriver();
@@ -50,11 +53,20 @@ public abstract class BaseIT {
     }
 
     /**
+     * Click an element using JavaScript to bypass overlay interception issues.
+     */
+    protected void jsClick(WebElement element) {
+        ((JavascriptExecutor) driver()).executeScript("arguments[0].click();", element);
+    }
+
+    /**
      * Navigate to the login page with pre-filled GreenMail connection details,
      * enter the password, and submit the login form.
      */
     protected void performLogin(String user) {
         final String password = IsotopeTestEnvironment.PASSWORD;
+        // Clear all browser state to ensure a clean login
+        clearBrowserState();
         driver().get(IsotopeTestEnvironment.getLoginUrl(user));
 
         // Wait for login form to be visible
@@ -69,30 +81,65 @@ public abstract class BaseIT {
         // Submit the form
         driver().findElement(By.cssSelector("form button[type='submit']")).click();
 
-        // Wait for redirect to main app (folder list should appear)
-        newWait(Duration.ofSeconds(30)).until(d -> {
-            // After login, the app redirects to "/" which shows the folder list
-            return !d.findElements(By.cssSelector("[class*='sidebar']")).isEmpty()
-                    || !d.findElements(By.cssSelector("[class*='folder']")).isEmpty()
-                    || d.getCurrentUrl().endsWith("/")
-                    || !d.getCurrentUrl().contains("/login");
-        });
+        // Wait for redirect to main app (sidebar/drawer should appear)
+        newWait(Duration.ofSeconds(30)).until(d ->
+                !d.findElements(By.cssSelector("aside[class*='mdc-drawer']")).isEmpty()
+                        && !d.getCurrentUrl().contains("/login"));
+        currentUser = user;
     }
 
     /**
      * Wait for the message list to be loaded in the current folder.
+     * The message list component renders a div with CSS Module class 'messageList'.
+     * After login, the app auto-selects INBOX and streams messages via SSE.
      */
     protected void waitForMessageList() {
+        newWait(Duration.ofSeconds(30)).until(d ->
+                // CSS Module hashed class from message-list.scss (.messageList)
+                !d.findElements(By.cssSelector("[class*='messageList']")).isEmpty()
+        );
+        // Also wait for at least one message item to be rendered
         newWait(Duration.ofSeconds(15)).until(d ->
-                !d.findElements(By.cssSelector("[class*='message-list']")).isEmpty()
-                        || !d.findElements(By.cssSelector("[class*='messageList']")).isEmpty()
+                !d.findElements(By.cssSelector("[class*='messageList'] [class*='item']")).isEmpty()
         );
     }
 
     /**
-     * Check if the user is currently logged in (i.e., not on the login page).
+     * Navigate back to the message list from any page (e.g. message viewer).
+     * Uses the INBOX folder in the sidebar instead of page reload to preserve SPA state.
+     */
+    protected void navigateToInbox() {
+        // Click the INBOX folder in the sidebar
+        final var inboxItems = driver().findElements(By.cssSelector("[class*='mdc-list-item']"));
+        for (WebElement item : inboxItems) {
+            if (item.getText().toLowerCase().contains("inbox")) {
+                jsClick(item);
+                return;
+            }
+        }
+    }
+
+    /**
+     * Clear browser state (cookies, localStorage, sessionStorage) and reset login tracking.
+     */
+    protected void clearBrowserState() {
+        driver().manage().deleteAllCookies();
+        ((JavascriptExecutor) driver()).executeScript(
+                "try { window.localStorage.clear(); window.sessionStorage.clear(); } catch(e) {}");
+        currentUser = null;
+    }
+
+    /**
+     * Check if the given user is currently logged in.
+     */
+    protected boolean isLoggedInAs(String user) {
+        return !driver().getCurrentUrl().contains("/login") && user.equals(currentUser);
+    }
+
+    /**
+     * Check if any user is currently logged in.
      */
     protected boolean isLoggedIn() {
-        return !driver().getCurrentUrl().contains("/login");
+        return !driver().getCurrentUrl().contains("/login") && currentUser != null;
     }
 }

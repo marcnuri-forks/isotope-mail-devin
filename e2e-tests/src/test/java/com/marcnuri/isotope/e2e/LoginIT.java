@@ -15,6 +15,7 @@
  */
 package com.marcnuri.isotope.e2e;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebElement;
@@ -27,6 +28,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * E2E tests for the login functionality.
  */
 class LoginIT extends BaseIT {
+
+    @BeforeEach
+    void setUp() {
+        // Clear browser state to ensure login page renders fresh
+        clearBrowserState();
+    }
 
     @Test
     void loginFormDisplaysRequiredFields() {
@@ -75,11 +82,16 @@ class LoginIT extends BaseIT {
         driver().get(IsotopeTestEnvironment.getFrontendUrl() + "/login");
         newWait().until(d -> d.findElement(By.id("serverHost")).isDisplayed());
 
-        // Click Advanced button
-        driver().findElement(By.cssSelector("button[class*='advanced']")).click();
+        // Click Advanced button (CSS Module hashed class advancedButton___XXXXX)
+        final WebElement advancedBtn = newWait().until(d -> {
+            final var buttons = d.findElements(By.cssSelector("button[class*='advancedButton']"));
+            return buttons.isEmpty() ? null : buttons.get(0);
+        });
+        jsClick(advancedBtn);
 
         // SMTP fields should now be visible
-        newWait().until(d -> d.findElement(By.id("smtpPort")).isDisplayed());
+        newWait().until(d -> !d.findElements(By.id("smtpPort")).isEmpty()
+                && d.findElement(By.id("smtpPort")).isDisplayed());
 
         assertThat(driver().findElement(By.id("smtpPort")).isDisplayed()).isTrue();
     }

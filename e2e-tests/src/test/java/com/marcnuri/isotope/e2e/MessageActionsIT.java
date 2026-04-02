@@ -34,24 +34,26 @@ class MessageActionsIT extends BaseIT {
 
     @BeforeEach
     void setUp() {
-        if (!isLoggedIn()) {
-            performLogin(IsotopeTestEnvironment.USER2);
+        if (!isLoggedInAs(IsotopeTestEnvironment.USER1)) {
+            performLogin(IsotopeTestEnvironment.USER1);
+        } else {
+            // Click INBOX in sidebar to navigate back to message list (preserves SPA state)
+            navigateToInbox();
         }
         waitForMessageList();
     }
 
     @Test
     void messageCanBeOpened() {
-        // Wait for messages to load
-        newWait().until(d -> !d.findElements(By.cssSelector("[class*='mdc-list-item']")).isEmpty());
+        // Wait for message items
+        newWait().until(d -> !d.findElements(By.cssSelector("[class*='messageList'] [class*='itemDetails']")).isEmpty());
 
-        // Click on a message
+        // Click on a message using JavaScript to avoid overlay interception
         final List<WebElement> messageItems = driver().findElements(
-                By.cssSelector("[class*='mdc-list-item'] [class*='itemDetails'],"
-                        + "[class*='mdc-list-item']"));
+                By.cssSelector("[class*='messageList'] [class*='itemDetails']"));
 
         assertThat(messageItems).isNotEmpty();
-        messageItems.get(0).click();
+        jsClick(messageItems.get(0));
 
         // Wait for message viewer
         newWait().until(d ->
@@ -63,16 +65,15 @@ class MessageActionsIT extends BaseIT {
 
     @Test
     void deleteButtonIsAvailableInViewer() {
-        // Wait for messages
-        newWait().until(d -> !d.findElements(By.cssSelector("[class*='mdc-list-item']")).isEmpty());
+        // Wait for message items
+        newWait().until(d -> !d.findElements(By.cssSelector("[class*='messageList'] [class*='itemDetails']")).isEmpty());
 
-        // Click on a message
+        // Click on a message using JavaScript to avoid overlay interception
         final List<WebElement> messageItems = driver().findElements(
-                By.cssSelector("[class*='mdc-list-item'] [class*='itemDetails'],"
-                        + "[class*='mdc-list-item']"));
+                By.cssSelector("[class*='messageList'] [class*='itemDetails']"));
 
         assertThat(messageItems).isNotEmpty();
-        messageItems.get(0).click();
+        jsClick(messageItems.get(0));
 
         // Wait for message viewer
         newWait().until(d ->
@@ -90,16 +91,15 @@ class MessageActionsIT extends BaseIT {
 
     @Test
     void topBarShowsActionButtonsInViewer() {
-        // Wait for messages
-        newWait().until(d -> !d.findElements(By.cssSelector("[class*='mdc-list-item']")).isEmpty());
+        // Wait for message items
+        newWait().until(d -> !d.findElements(By.cssSelector("[class*='messageList'] [class*='itemDetails']")).isEmpty());
 
-        // Click on a message
+        // Click on a message using JavaScript to avoid overlay interception
         final List<WebElement> messageItems = driver().findElements(
-                By.cssSelector("[class*='mdc-list-item'] [class*='itemDetails'],"
-                        + "[class*='mdc-list-item']"));
+                By.cssSelector("[class*='messageList'] [class*='itemDetails']"));
 
         assertThat(messageItems).isNotEmpty();
-        messageItems.get(0).click();
+        jsClick(messageItems.get(0));
 
         // Wait for message viewer
         newWait().until(d ->

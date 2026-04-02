@@ -33,7 +33,7 @@ class MessageListIT extends BaseIT {
 
     @BeforeEach
     void setUp() {
-        if (!isLoggedIn()) {
+        if (!isLoggedInAs(IsotopeTestEnvironment.USER1)) {
             performLogin(IsotopeTestEnvironment.USER1);
         }
         waitForMessageList();
@@ -60,14 +60,14 @@ class MessageListIT extends BaseIT {
 
     @Test
     void messageListItemsContainSubjectAndSender() {
-        // Wait for list items (message items have mdc-list-item class)
-        newWait().until(d -> !d.findElements(By.cssSelector("[class*='mdc-list-item']")).isEmpty());
+        // Wait for message items inside the messageList container (CSS Module hashed classes)
+        newWait().until(d -> !d.findElements(By.cssSelector("[class*='messageList'] li[class*='item']")).isEmpty());
 
         final List<WebElement> messageItems = driver().findElements(
-                By.cssSelector("[class*='mdc-list-item']"));
+                By.cssSelector("[class*='messageList'] li[class*='item']"));
         assertThat(messageItems).isNotEmpty();
 
-        // Each item should have subject and from spans
+        // Each item should have subject and from spans (CSS Module hashed classes)
         final WebElement firstItem = messageItems.get(0);
         assertThat(firstItem.findElements(By.cssSelector("[class*='subject']"))).isNotEmpty();
         assertThat(firstItem.findElements(By.cssSelector("[class*='from']"))).isNotEmpty();

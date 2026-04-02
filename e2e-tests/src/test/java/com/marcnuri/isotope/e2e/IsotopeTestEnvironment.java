@@ -124,7 +124,8 @@ public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallba
         message.setSubject(subject);
         message.setText(body);
         message.setSentDate(new Date());
-        greenMail.getUserManager().getUser(to).deliver(message);
+        // GreenMail getUserByEmail looks up by email address (e.g. user1@localhost)
+        greenMail.getUserManager().getUserByEmail(to).deliver(message);
     }
 
     private void startBackend() throws IOException, InterruptedException {
@@ -135,9 +136,14 @@ public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallba
 
         log.info("Starting backend from JAR: {} on port {}", serverJar, backendPort);
 
+        // Find Java executable - prefer JAVA_HOME, fall back to PATH
+        final String javaExecutable = findJavaExecutable();
+
         final ProcessBuilder pb = new ProcessBuilder(
-                "java", "-jar", serverJar,
-                "--server.port=" + backendPort
+                javaExecutable, "-jar", serverJar,
+                "--server.port=" + backendPort,
+                "--spring.profiles.active=dev",
+                "--server.use-forward-headers=true"
         );
         pb.environment().put("SPRING_MAIL_HOST", "127.0.0.1");
         pb.environment().put("TRUSTED_HOSTS", "");
@@ -168,8 +174,8 @@ public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallba
 
         log.info("Starting frontend file server from {} on port {}", clientDist, frontendPort);
 
-        // Create a Python SPA server script that falls back to index.html for client-side routes
-        final Path spaServerScript = createSpaServerScript(clientDist);
+        // Create a Python SPA server script that proxies /api/ to backend and falls back to index.html
+        final Path spaServerScript = createSpaServerScript(clientDist, backendPort);
 
         final ProcessBuilder pb = new ProcessBuilder(
                 "python3", spaServerScript.toAbsolutePath().toString(),
@@ -187,6 +193,11 @@ public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallba
         WebDriverManager.chromedriver().setup();
 
         final ChromeOptions options = new ChromeOptions();
+        // Use the real Chrome binary (not any wrapper scripts)
+        final File chromeStable = new File("/usr/bin/google-chrome-stable");
+        if (chromeStable.exists()) {
+            options.setBinary(chromeStable.getAbsolutePath());
+        }
         options.addArguments("--headless");
         options.addArguments("--no-sandbox");
         options.addArguments("--disable-dev-shm-usage");
@@ -326,6 +337,22 @@ public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallba
     }
 
     /**
+     * Finds the Java executable to use for running the backend.
+     * Prefers Java 11 if available (for compatibility with older Spring Boot),
+     * falls back to the current Java.
+     */
+    private static String findJavaExecutable() {
+        // Check for Java 11 installation
+        final File java11 = new File("/usr/lib/jvm/java-11-openjdk-amd64/bin/java");
+        if (java11.exists()) {
+            log.info("Using Java 11 for backend: {}", java11.getAbsolutePath());
+            return java11.getAbsolutePath();
+        }
+        // Fall back to the java on PATH
+        return "java";
+    }
+
+    /**
      * Returns the login URL pre-filled with GreenMail connection details for the given user.
      */
     public static String getLoginUrl(String user) {
@@ -342,28 +369,78 @@ public class IsotopeTestEnvironment implements BeforeAllCallback, AfterAllCallba
 
     /**
      * Creates a Python script that serves static files from the given directory
-     * with SPA fallback (returns index.html for any path that doesn't match a file).
+     * with API proxy to backend and SPA fallback (returns index.html for client-side routes).
      */
-    private static Path createSpaServerScript(String directory) throws IOException {
+    private static Path createSpaServerScript(String directory, int apiBackendPort) throws IOException {
         final String script = String.join("\n",
                 "import http.server",
                 "import os",
                 "import sys",
+                "import urllib.request",
+                "import urllib.error",
+                "",
+                "BACKEND_PORT = " + apiBackendPort,
                 "",
                 "class SPAHandler(http.server.SimpleHTTPRequestHandler):",
                 "    def __init__(self, *args, **kwargs):",
                 "        super().__init__(*args, directory='" + directory.replace("'", "\\'") + "', **kwargs)",
                 "",
+                "    def _proxy_to_backend(self):",
+                "        # Strip /api prefix since backend serves at /v1/... not /api/v1/...",
+                "        backend_path = self.path[4:] if self.path.startswith('/api/') else self.path",
+                "        url = f'http://127.0.0.1:{BACKEND_PORT}{backend_path}'",
+                "        try:",
+                "            content_length = int(self.headers.get('Content-Length', 0))",
+                "            body = self.rfile.read(content_length) if content_length > 0 else None",
+                "            req = urllib.request.Request(url, data=body, method=self.command)",
+                "            # Forward original Host header so Spring HATEOAS generates correct links",
+                "            original_host = self.headers.get('Host', '')",
+                "            for key, val in self.headers.items():",
+                "                if key.lower() not in ('content-length',):",
+                "                    req.add_header(key, val)",
+                "            if original_host:",
+                "                req.add_header('X-Forwarded-Host', original_host)",
+                "                req.add_header('X-Forwarded-Proto', 'http')",
+                "            resp = urllib.request.urlopen(req)",
+                "            self.send_response(resp.status)",
+                "            for key, val in resp.getheaders():",
+                "                if key.lower() not in ('transfer-encoding',):",
+                "                    self.send_header(key, val)",
+                "            self.end_headers()",
+                "            self.wfile.write(resp.read())",
+                "        except urllib.error.HTTPError as e:",
+                "            self.send_response(e.code)",
+                "            for key, val in e.headers.items():",
+                "                if key.lower() not in ('transfer-encoding',):",
+                "                    self.send_header(key, val)",
+                "            self.end_headers()",
+                "            self.wfile.write(e.read())",
+                "        except Exception as e:",
+                "            self.send_error(502, f'Backend proxy error: {e}')",
+                "",
                 "    def do_GET(self):",
-                "        # Serve the file if it exists, otherwise fall back to index.html",
+                "        if self.path.startswith('/api/') or self.path.startswith('/v1/'):",
+                "            return self._proxy_to_backend()",
                 "        path = self.translate_path(self.path)",
-                "        if not os.path.exists(path) or os.path.isdir(path) and not os.path.exists(os.path.join(path, 'index.html')):",
+                "        if not os.path.exists(path) or (os.path.isdir(path) and not os.path.exists(os.path.join(path, 'index.html'))):",
                 "            self.path = '/index.html'",
                 "        return super().do_GET()",
                 "",
+                "    def do_POST(self):",
+                "        return self._proxy_to_backend()",
+                "",
+                "    def do_PUT(self):",
+                "        return self._proxy_to_backend()",
+                "",
+                "    def do_DELETE(self):",
+                "        return self._proxy_to_backend()",
+                "",
+                "    def do_PATCH(self):",
+                "        return self._proxy_to_backend()",
+                "",
                 "port = int(sys.argv[1])",
                 "server = http.server.HTTPServer(('127.0.0.1', port), SPAHandler)",
-                "print(f'SPA server started on port {port}')",
+                "print(f'SPA server with API proxy started on port {port}, backend on port {BACKEND_PORT}')",
                 "server.serve_forever()"
         );
 

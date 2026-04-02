@@ -34,7 +34,7 @@ class FolderIT extends BaseIT {
 
     @BeforeEach
     void setUp() {
-        if (!isLoggedIn()) {
+        if (!isLoggedInAs(IsotopeTestEnvironment.USER1)) {
             performLogin(IsotopeTestEnvironment.USER1);
         }
     }
@@ -71,12 +71,12 @@ class FolderIT extends BaseIT {
             return items.stream().anyMatch(el -> el.getText().toLowerCase().contains("inbox"));
         });
 
-        // Find and click the INBOX folder
+        // Find and click the INBOX folder using JavaScript to avoid overlay interception
         final List<WebElement> folderItems = driver().findElements(
                 By.cssSelector("[class*='mdc-list-item']"));
         for (WebElement item : folderItems) {
             if (item.getText().toLowerCase().contains("inbox")) {
-                item.click();
+                jsClick(item);
                 break;
             }
         }
